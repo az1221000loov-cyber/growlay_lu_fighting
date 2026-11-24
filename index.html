@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>隕石守衛 Meteor Guard</title>
+<title>呱睿保衛戰</title>
 <style>
   html, body { margin:0; height:100%; background:#0b1020; color:#dde6ff; font-family:"Noto Sans TC","Microsoft JhengHei",sans-serif; }
   body { display:flex; flex-direction:column; align-items:center; justify-content:center; touch-action:none; user-select:none; }
@@ -23,7 +23,7 @@
 </head>
 <body>
 <div id="login">
-  <h1>隕石守衛 Meteor Guard</h1>
+  <h1>呱睿保衛戰</h1>
   <div>請輸入玩家暱稱登入</div>
   <input id="uname" maxlength="16" placeholder="暱稱" autocomplete="off">
   <button id="ubtn">登入</button>
@@ -46,6 +46,9 @@ try { hi = +localStorage.getItem('meteor_hi') || 0; } catch(e) {}
 const headImg = new Image(); let headOk = false;
 headImg.onload = () => { headOk = true; };
 headImg.src = 'head.png';
+const coverImg = new Image(); let coverOk = false;
+coverImg.onload = () => { coverOk = true; };
+coverImg.src = 'cover.jpg';
 
 const keys = {}, touch = {l:false, r:false, u:false, d:false, f:false};
 const stars = Array.from({length:70}, () => ({x:Math.random()*W, y:Math.random()*H, s:Math.random()*40+15, r:Math.random()*1.4+.3}));
@@ -277,13 +280,18 @@ function draw() {
   }
 
   if (state === 'title') {
-    text('隕石守衛', W/2, 200, 58, '#7fb2ff');
-    text('METEOR GUARD', W/2, 236, 20, '#8a9acc', 'center', 'normal');
-    drawHero(W/2, 300, 2.2, 1);
-    text('按 Enter 或點擊畫面開始', W/2, 400, 20, '#dde6ff');
-    text('擊碎隕石得分，小隕石分數更高', W/2, 436, 15, '#8a9acc', 'center', 'normal');
-    text('子彈有限！撿「彈」補給箱補充', W/2, 462, 15, '#8a9acc', 'center', 'normal');
-    text('最高分 ' + hi, W/2, 500, 15, '#8a9acc', 'center', 'normal');
+    text('呱睿保衛戰', W/2, 92, 54, '#7fb2ff');
+    text('GUARUI DEFENSE', W/2, 122, 16, '#8a9acc', 'center', 'normal');
+    const cs = 270, cx = (W-cs)/2, cy = 142;
+    if (coverOk) {
+      ctx.save(); ctx.beginPath(); ctx.roundRect(cx, cy, cs, cs, 18); ctx.clip();
+      ctx.drawImage(coverImg, cx, cy, cs, cs); ctx.restore();
+      ctx.strokeStyle = '#7fb2ff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.roundRect(cx, cy, cs, cs, 18); ctx.stroke();
+    } else drawHero(W/2, cy+cs/2, 2.2, 1);
+    text('按 Enter 或點擊畫面開始', W/2, 458, 20, '#dde6ff');
+    text('用拳頭擊碎落下的大頭，小的分數更高', W/2, 490, 15, '#8a9acc', 'center', 'normal');
+    text('子彈有限！撿「彈」補給箱補充', W/2, 514, 15, '#8a9acc', 'center', 'normal');
+    text('最高分 ' + hi, W/2, 546, 15, '#8a9acc', 'center', 'normal');
   } else if (state === 'pause') {
     ctx.fillStyle = 'rgba(11,16,32,.75)'; ctx.fillRect(0, 0, W, H);
     text('暫停', W/2, H/2, 44, '#dde6ff');
