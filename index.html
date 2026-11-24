@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>隕石守衛 Meteor Guard</title>
+<style>
+  html, body { margin:0; height:100%; background:#0b1020; color:#dde6ff; font-family:"Noto Sans TC","Microsoft JhengHei",sans-serif; }
+  body { display:flex; flex-direction:column; align-items:center; justify-content:center; touch-action:none; user-select:none; }
+  canvas { background:#0b1020; border:2px solid #2a3a6a; border-radius:8px; display:block; max-width:96vw; max-height:76vh; aspect-ratio:3/4; box-shadow:0 0 18px rgba(80,120,255,.25); }
+  #bar { margin-top:8px; font-size:13px; color:#9fb0e0; }
+  #bar a { color:#7fb2ff; margin-left:10px; }
+  #help { margin-top:4px; font-size:12px; color:#7f8fbf; }
+  #touch { display:none; margin-top:10px; gap:12px; }
+  #touch button { width:76px; height:54px; font-size:20px; border:2px solid #4a5f9f; background:#16224a; border-radius:12px; color:#dde6ff; }
+  #touch button:active { background:#2a3d7a; }
+  @media (pointer:coarse) { #touch { display:flex; } #help { display:none; } }
+  #login { position:fixed; inset:0; background:rgba(11,16,32,.97); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; z-index:10; }
+  #login h1 { margin:0; color:#7fb2ff; }
+  #login input { font-size:20px; padding:8px 12px; border:2px solid #4a5f9f; border-radius:8px; text-align:center; width:220px; background:#16224a; color:#fff; }
+  #login button { font-size:18px; padding:8px 26px; border:0; background:#3d7bff; color:#fff; border-radius:8px; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="login">
+  <h1>隕石守衛 Meteor Guard</h1>
+  <div>請輸入玩家暱稱登入</div>
+  <input id="uname" maxlength="16" placeholder="暱稱" autocomplete="off">
+  <button id="ubtn">登入</button>
+</div>
+<canvas id="c" width="480" height="640"></canvas>
+<div id="bar">玩家：<b id="who">-</b> <a href="#" id="logout">登出</a> <a href="dashboard.html" target="_blank">儀表板</a></div>
+<div id="help">方向鍵 / WASD 移動　空白鍵 射擊　P 暫停　Enter 開始</div>
+<div id="touch"><button id="bL">◀</button><button id="bU">▲</button><button id="bD">▼</button><button id="bF">射擊</button><button id="bR">▶</button></div>
+<script>
+(() => {
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+const MAX_AMMO = 60, START_AMMO = 40;
+let state = 'title';                 // title | play | pause | over
+let score = 0, hi = 0, shield = 3, ammo = START_AMMO, level = 1, time = 0, playTime = 0;
+let shots = 0, hitsLanded = 0, hitsTaken = 0, kills = 0, startedAt = 0, shake = 0;
+let player, bullets, rocks, crates, particles, spawnT, crateT, ghosts = [];
+try { hi = +localStorage.getItem('meteor_hi') || 0; } catch(e) {}
+
+const headImg = new Image(); let headOk = false;
+headImg.onload = () => { headOk = true; };
+headImg.src = 'head.png';
+
+const keys = {}, touch = {l:false, r:false, u:false, d:false, f:false};
+const stars = Array.from({length:70}, () => ({x:Math.random()*W, y:Math.random()*H, s:Math.random()*40+15, r:Math.random()*1.4+.3}));
+
+// ---------- login & logging ----------
+let user = '';
+try { user = localStorage.getItem('meteor_user') || ''; } catch(e) {}
+const loginEl = document.getElementById('login'), whoEl = document.getElementById('who');
+function showUser() { whoEl.textContent = user || '-'; loginEl.style.display = user ? 'none' : 'flex'; }
+function doLogin() {
+  const n = document.getElementById('uname').value.trim();
+  if (!n) return;
+  user = n; try { localStorage.setItem('meteor_user', user); } catch(e) {}
+  showUser();
+}
+document.getElementById('ubtn').onclick = doLogin;
+document.getElementById('uname').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') doLogin(); });
+document.getElementById('logout').onclick = e => {
+  e.preventDefault(); user = ''; try { localStorage.removeItem('meteor_user'); } catch(x) {}
+  state = 'title'; showUser();
+};
+function writeLog() {
+  let logs = [];
+  try { logs = JSON.parse(localStorage.getItem('meteor_logs') || '[]'); } catch(e) {}
+  logs.push({user, time:new Date().toISOString(), score, shots, hitsLanded, hitsTaken, kills, level, duration:Math.round((Date.now()-startedAt)/1000)});
+  try { localStorage.setItem('meteor_logs', JSON.stringify(logs)); } catch(e) {}
+}
+
+// ---------- game logic ----------
+const RADIUS = [0, 14, 24, 38], POINTS = [0, 40, 20, 10], DROP = [0, .22, .10, .04];
+
+function makeShape(r) {
+  const n = 9 + Math.floor(Math.random()*4);
+  return Array.from({length:n}, (_, i) => { const a = i/n*6.283, d = r*(.78 + Math.random()*.3); return [Math.cos(a)*d, Math.sin(a)*d]; });
+}
+function spawnRock(size, x, y, vx, vy) {
+  rocks.push({size, r:RADIUS[size], x, y, vx, vy, rot:0, spin:(Math.random()-.5)*3, shape:makeShape(RADIUS[size])});
+}
+function spawnWave() {
+  const size = Math.random() < .5 ? 3 : (Math.random() < .6 ? 2 : 1);
+  const sp = 70 + level*14 + Math.random()*50;
+  spawnRock(size, 40 + Math.random()*(W-80), -50, (Math.random()-.5)*90, sp);
+}
+function newPlayer() { return {x:W/2, y:H-80, cd:0, inv:1.5}; }
+function reset() {
+  score = 0; shield = 3; ammo = START_AMMO; level = 1; playTime = 0;
+  shots = 0; hitsLanded = 0; hitsTaken = 0; kills = 0; startedAt = Date.now();
+  player = newPlayer(); bullets = []; rocks = []; crates = []; particles = []; ghosts = [];
+  spawnT = 1; crateT = 2;
+}
+function boom(x, y, col, n = 12) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random()*6.283, v = 50 + Math.random()*170;
+    particles.push({x, y, vx:Math.cos(a)*v, vy:Math.sin(a)*v, life:.35+Math.random()*.45, col});
+  }
+}
+function fire() {
+  if (player.cd > 0 || ammo <= 0 || bullets.length >= 6) return;
+  bullets.push({x:player.x, y:player.y-20});
+  ammo--; shots++; player.cd = .17;
+}
+function breakRock(rk, byBullet) {
+  rocks.splice(rocks.indexOf(rk), 1);
+  boom(rk.x, rk.y, headOk ? '#ffd9b0' : '#b9a58a', 6 + rk.size*5);
+  if (!byBullet) return;
+  kills++; score += POINTS[rk.size];
+  ghosts.push({x:rk.x, y:rk.y, r:rk.r, rot:rk.rot, vx:rk.vx*.3, vy:-60, spin:(Math.random()<.5?-1:1)*(2+Math.random()*2), life:.7});
+  if (rk.size > 1) {
+    spawnRock(rk.size-1, rk.x-rk.r*.4, rk.y, rk.vx-70, rk.vy*.9);
+    spawnRock(rk.size-1, rk.x+rk.r*.4, rk.y, rk.vx+70, rk.vy*.9);
+  }
+  if (Math.random() < DROP[rk.size]) crates.push({x:rk.x, y:rk.y});
+}
+
+function update(dt) {
+  time += dt;
+  stars.forEach(s => { s.y += s.s*dt; if (s.y > H) { s.y = 0; s.x = Math.random()*W; } });
+  particles.forEach(p => { p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt; });
+  particles = particles.filter(p => p.life > 0);
+  ghosts.forEach(g => { g.x += g.vx*dt; g.y += g.vy*dt; g.vy += 220*dt; g.rot += g.spin*dt; g.life -= dt; });
+  ghosts = ghosts.filter(g => g.life > 0);
+  if (state !== 'play') return;
+  playTime += dt; shake = Math.max(0, shake - dt*30);
+  level = 1 + Math.floor(playTime/20);
+
+  const dx = (keys.ArrowRight||keys.d||keys.D||touch.r ? 1:0) - (keys.ArrowLeft||keys.a||keys.A||touch.l ? 1:0);
+  const dy = (keys.ArrowDown||keys.s||keys.S||touch.d ? 1:0) - (keys.ArrowUp||keys.w||keys.W||touch.u ? 1:0);
+  player.x = Math.max(20, Math.min(W-20, player.x + dx*300*dt));
+  player.y = Math.max(H-220, Math.min(H-30, player.y + dy*300*dt));
+  player.cd -= dt; player.inv -= dt;
+  if (keys[' '] || touch.f) fire();
+
+  bullets.forEach(b => b.y -= 640*dt);
+  bullets = bullets.filter(b => b.y > -20);
+
+  spawnT -= dt;
+  if (spawnT <= 0) { spawnWave(); spawnT = Math.max(.35, 1.3 - level*.1) * (.7 + Math.random()*.6); }
+  // 彈藥耗盡時定時補給，避免卡死
+  if (ammo <= 0 && !bullets.length) { crateT -= dt; if (crateT <= 0) { crates.push({x:40+Math.random()*(W-80), y:-20}); crateT = 3.5; } }
+  else crateT = 2;
+
+  for (const rk of rocks) {
+    rk.x += rk.vx*dt; rk.y += rk.vy*dt; rk.rot += rk.spin*dt;
+    if (rk.x < rk.r && rk.vx < 0 || rk.x > W-rk.r && rk.vx > 0) rk.vx = -rk.vx;
+  }
+  rocks = rocks.filter(rk => rk.y < H+60);
+
+  // 子彈 vs 隕石
+  for (const b of bullets.slice()) for (const rk of rocks.slice()) {
+    if (Math.hypot(b.x-rk.x, b.y-rk.y) < rk.r+3) {
+      bullets.splice(bullets.indexOf(b), 1); hitsLanded++; breakRock(rk, true); break;
+    }
+  }
+  // 隕石 vs 玩家
+  if (player.inv <= 0) for (const rk of rocks.slice()) {
+    if (Math.hypot(player.x-rk.x, player.y-rk.y) < rk.r+12) {
+      shield--; hitsTaken++; player.inv = 1.6; shake = 8;
+      breakRock(rk, false); boom(player.x, player.y, '#ffd9b0', 22);
+      if (shield <= 0) { gameOver(); return; }
+      break;
+    }
+  }
+  // 補給箱
+  crates.forEach(c => c.y += 90*dt);
+  for (const c of crates.slice()) if (Math.hypot(c.x-player.x, c.y-player.y) < 24) {
+    ammo = Math.min(MAX_AMMO, ammo + 12); crates.splice(crates.indexOf(c), 1); boom(c.x, c.y, '#ffd24a', 8);
+  }
+  crates = crates.filter(c => c.y < H+30);
+}
+
+function gameOver() {
+  state = 'over'; writeLog();
+  if (score > hi) { hi = score; try { localStorage.setItem('meteor_hi', hi); } catch(e) {} }
+}
+
+// ---------- drawing ----------
+function text(t, x, y, size, col, align = 'center', weight = 'bold') {
+  ctx.fillStyle = col; ctx.font = `${weight} ${size}px "Noto Sans TC","Microsoft JhengHei",sans-serif`;
+  ctx.textAlign = align; ctx.fillText(t, x, y);
+}
+function drawHero(x, y, scale = 1, run = 0) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+  const sw = Math.sin(time*14) * 3 * run;
+  ctx.lineCap = 'round';
+  // 腿
+  ctx.strokeStyle = '#2b3a6a'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(-4,10); ctx.lineTo(-5-sw,24); ctx.moveTo(4,10); ctx.lineTo(5+sw,24); ctx.stroke();
+  // 身體
+  ctx.fillStyle = '#3d7bff'; ctx.beginPath(); ctx.roundRect(-9,-4,18,17,5); ctx.fill();
+  // 手臂：左手叉腰，右手高舉
+  ctx.strokeStyle = '#ffd9b0'; ctx.lineWidth = 4.5;
+  ctx.beginPath(); ctx.moveTo(-8,0); ctx.lineTo(-14,7); ctx.lineTo(-8,10); ctx.moveTo(8,-1); ctx.lineTo(14,-10); ctx.stroke();
+  ctx.fillStyle = '#ffd9b0'; ctx.beginPath(); ctx.arc(14,-12,4.5,0,6.283); ctx.fill();
+  // 頭
+  ctx.fillStyle = '#ffd9b0'; ctx.beginPath(); ctx.arc(0,-14,9,0,6.283); ctx.fill();
+  ctx.fillStyle = '#2a2230'; ctx.beginPath(); ctx.arc(0,-16,9,3.35,6.07); ctx.lineTo(0,-16); ctx.fill();
+  ctx.fillRect(-4,-14,2.4,2.8); ctx.fillRect(2,-14,2.4,2.8);
+  ctx.strokeStyle = '#a0522d'; ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.arc(0,-10.5,3,.2,2.94); ctx.stroke();
+  ctx.restore();
+}
+// 被打中的頭：眼睛變叉叉、頭上繞著星星，彈出後淡出
+function drawDeadHead(g) {
+  const r = g.r, pop = 1 + .25*Math.min(1, g.life/.7);
+  ctx.save(); ctx.translate(g.x, g.y); ctx.globalAlpha = Math.min(1, g.life/.25);
+  ctx.save(); ctx.rotate(g.rot); ctx.scale(pop, pop);
+  ctx.drawImage(headImg, -r, -r, r*2, r*2);
+  ctx.strokeStyle = '#ff4a3a'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(0, 0, r-1, 0, 6.283); ctx.stroke();
+  for (const ex of [-.25, .25]) {
+    const x = ex*r, y = -.03*r, pr = .16*r, s = .1*r;
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, pr, 0, 6.283); ctx.fill();
+    ctx.strokeStyle = '#111'; ctx.lineWidth = Math.max(2, r*.07); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x-s, y-s); ctx.lineTo(x+s, y+s); ctx.moveTo(x+s, y-s); ctx.lineTo(x-s, y+s); ctx.stroke();
+  }
+  ctx.restore();
+  ctx.font = `bold ${Math.max(12, r*.45)}px sans-serif`; ctx.textAlign = 'center'; ctx.fillStyle = '#ffd24a';
+  for (let i = 0; i < 3; i++) { const a = time*7 + i*2.094; ctx.fillText('★', Math.cos(a)*r*.7, -r*1.05 + Math.sin(a)*r*.2); }
+  ctx.restore();
+}
+function drawFist(x, y) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.strokeStyle = 'rgba(190,230,255,.55)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-4,8); ctx.lineTo(-4,20); ctx.moveTo(4,8); ctx.lineTo(4,24); ctx.stroke();
+  ctx.fillStyle = '#ffd9b0'; ctx.strokeStyle = '#b8743f'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.roundRect(-8,-6,16,15,5); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); for (let i = 1; i < 4; i++) { ctx.moveTo(-8+i*4,-6); ctx.lineTo(-8+i*4,0); } ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(-8,4,3.5,5,0,0,6.283); ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+function draw() {
+  ctx.save();
+  if (shake > 0) ctx.translate((Math.random()-.5)*shake, (Math.random()-.5)*shake);
+  ctx.fillStyle = '#0b1020'; ctx.fillRect(-10, -10, W+20, H+20);
+  ctx.fillStyle = '#5a6a9a'; stars.forEach(s => { ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.283); ctx.fill(); });
+
+  if (state !== 'title') {
+    for (const rk of rocks) {
+      ctx.save(); ctx.translate(rk.x, rk.y); ctx.rotate(rk.rot);
+      if (headOk) {
+        ctx.drawImage(headImg, -rk.r, -rk.r, rk.r*2, rk.r*2);
+        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, 0, rk.r-1, 0, 6.283); ctx.stroke();
+      } else {
+        ctx.fillStyle = '#8a7a66'; ctx.strokeStyle = '#c9b89d'; ctx.lineWidth = 2;
+        ctx.beginPath(); rk.shape.forEach(([px, py], i) => i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)); ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    if (headOk) ghosts.forEach(drawDeadHead);
+    for (const c of crates) {
+      ctx.fillStyle = '#ffd24a'; ctx.fillRect(c.x-12, c.y-12, 24, 24);
+      ctx.strokeStyle = '#a07800'; ctx.lineWidth = 2; ctx.strokeRect(c.x-12, c.y-12, 24, 24);
+      text('彈', c.x, c.y+6, 16, '#5a3c00');
+    }
+    bullets.forEach(b => drawFist(b.x, b.y));
+    if (!(player.inv > 0 && Math.floor(time*14)%2)) drawHero(player.x, player.y, 1, state === 'play' ? 1 : 0);
+    particles.forEach(p => { ctx.globalAlpha = Math.max(0, p.life*2); ctx.fillStyle = p.col; ctx.fillRect(p.x-2, p.y-2, 4, 4); });
+    ctx.globalAlpha = 1;
+
+    text('分數 ' + score, 12, 24, 17, '#dde6ff', 'left');
+    text('最高 ' + hi, W/2, 24, 14, '#8a9acc');
+    text('Lv ' + level, W-12, 24, 15, '#8a9acc', 'right');
+    for (let i = 0; i < shield; i++) drawHero(20 + i*26, H-26, .5);
+    const bw = 140, bx = W-bw-12, by = H-26, pct = ammo/MAX_AMMO;
+    ctx.fillStyle = '#16224a'; ctx.fillRect(bx, by, bw, 12);
+    ctx.fillStyle = ammo <= 8 ? '#ff5a4a' : '#ffd24a'; ctx.fillRect(bx, by, bw*pct, 12);
+    text('彈藥 ' + ammo, bx, by-5, 13, '#c9d6ff', 'left');
+  }
+
+  if (state === 'title') {
+    text('隕石守衛', W/2, 200, 58, '#7fb2ff');
+    text('METEOR GUARD', W/2, 236, 20, '#8a9acc', 'center', 'normal');
+    drawHero(W/2, 300, 2.2, 1);
+    text('按 Enter 或點擊畫面開始', W/2, 400, 20, '#dde6ff');
+    text('擊碎隕石得分，小隕石分數更高', W/2, 436, 15, '#8a9acc', 'center', 'normal');
+    text('子彈有限！撿「彈」補給箱補充', W/2, 462, 15, '#8a9acc', 'center', 'normal');
+    text('最高分 ' + hi, W/2, 500, 15, '#8a9acc', 'center', 'normal');
+  } else if (state === 'pause') {
+    ctx.fillStyle = 'rgba(11,16,32,.75)'; ctx.fillRect(0, 0, W, H);
+    text('暫停', W/2, H/2, 44, '#dde6ff');
+    text('按 P 繼續', W/2, H/2+34, 16, '#8a9acc', 'center', 'normal');
+  } else if (state === 'over') {
+    ctx.fillStyle = 'rgba(11,16,32,.82)'; ctx.fillRect(0, 0, W, H);
+    text('防線失守', W/2, H/2-70, 44, '#ff6a5a');
+    text('得分 ' + score + (score >= hi ? '　🏆 新紀錄！' : ''), W/2, H/2-24, 22, '#dde6ff');
+    text(`發射 ${shots} 發　命中 ${hitsLanded}　被撞 ${hitsTaken} 次`, W/2, H/2+12, 15, '#9fb0e0', 'center', 'normal');
+    text('紀錄已存入儀表板', W/2, H/2+38, 14, '#8a9acc', 'center', 'normal');
+    text('按 Enter 或點擊畫面重玩', W/2, H/2+72, 16, '#dde6ff', 'center', 'normal');
+  }
+  ctx.restore();
+}
+
+// ---------- loop & input ----------
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(.05, (now - last)/1000); last = now;
+  update(dt); draw(); requestAnimationFrame(loop);
+}
+function act() { if (user && (state === 'title' || state === 'over')) { reset(); state = 'play'; } }
+
+addEventListener('keydown', e => {
+  if ([' ','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) e.preventDefault();
+  keys[e.key] = true;
+  if (e.key === 'Enter') act();
+  if (e.key === 'p' || e.key === 'P') { if (state === 'play') state = 'pause'; else if (state === 'pause') state = 'play'; }
+});
+addEventListener('keyup', e => { keys[e.key] = false; });
+cv.addEventListener('pointerdown', act);
+
+const hold = (id, k) => {
+  const b = document.getElementById(id);
+  const on = e => { e.preventDefault(); touch[k] = true; act(); }, off = e => { e.preventDefault(); touch[k] = false; };
+  b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off);
+  b.addEventListener('pointerleave', off); b.addEventListener('pointercancel', off);
+};
+hold('bL','l'); hold('bR','r'); hold('bU','u'); hold('bD','d'); hold('bF','f');
+
+reset(); state = 'title';
+showUser();
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

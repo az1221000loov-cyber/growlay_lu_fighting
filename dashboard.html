@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>隕石守衛 Dashboard</title>
+<style>
+  :root { --bg:#f5f7fa; --card:#fff; --ink:#223; --mute:#778; --line:#dde3ea; --blue:#2a5db0; --amber:#e0a800; --red:#d6402a; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:"Noto Sans TC","Microsoft JhengHei",sans-serif; }
+  main { max-width:1000px; margin:0 auto; padding:16px; }
+  h1 { margin:0 0 4px; font-size:22px; }
+  .sub { color:var(--mute); font-size:13px; margin-bottom:14px; }
+  .tools { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .tools button, .tools label { font-size:13px; padding:6px 12px; border:1px solid var(--line); background:var(--card); border-radius:6px; cursor:pointer; color:var(--ink); }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .card .k { font-size:12px; color:var(--mute); } .card .v { font-size:26px; font-weight:700; margin-top:2px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:10px; margin-bottom:14px; }
+  .card h2 { font-size:14px; margin:0 0 8px; }
+  svg { width:100%; height:auto; display:block; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { padding:7px 8px; border-bottom:1px solid var(--line); text-align:right; }
+  th:nth-child(1), td:nth-child(1), th:nth-child(2), td:nth-child(2) { text-align:left; }
+  th { color:var(--mute); font-weight:600; font-size:12px; }
+  .empty { color:var(--mute); padding:20px; text-align:center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>隕石守衛 Meteor Guard — 玩家 Log 儀表板</h1>
+  <div class="sub">資料來源：瀏覽器 localStorage（meteor_logs）。每局結束時由遊戲寫入。</div>
+  <div class="tools">
+    <button id="refresh">重新整理</button>
+    <button id="export">匯出 JSON</button>
+    <label>匯入 JSON<input id="import" type="file" accept=".json" hidden></label>
+    <button id="clear">清除全部紀錄</button>
+  </div>
+  <div class="cards" id="cards"></div>
+  <div class="grid">
+    <div class="card"><h2>各玩家最高分</h2><div id="c1"></div></div>
+    <div class="card"><h2>各玩家平均彈藥消耗（發）</h2><div id="c2"></div></div>
+    <div class="card"><h2>各玩家平均被攻擊次數</h2><div id="c3"></div></div>
+    <div class="card"><h2>每局分數趨勢</h2><div id="c4"></div></div>
+  </div>
+  <div class="card">
+    <h2>玩家排行榜（依最高分）</h2>
+    <div id="rank"></div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const load = () => { try { return JSON.parse(localStorage.getItem('meteor_logs') || '[]'); } catch(e) { return []; } };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const avg = a => a.length ? a.reduce((x,y)=>x+y,0)/a.length : 0;
+
+function bars(el, rows, color, fmt = v => Math.round(v)) {
+  if (!rows.length) { el.innerHTML = '<div class="empty">尚無資料</div>'; return; }
+  const max = Math.max(...rows.map(r => r.v), 1), rh = 26, w = 420, lw = 90;
+  let s = `<svg viewBox="0 0 ${w} ${rows.length*rh+4}" role="img">`;
+  rows.forEach((r, i) => {
+    const y = i*rh + 2, bw = (w-lw-50) * r.v / max;
+    s += `<text x="${lw-6}" y="${y+16}" text-anchor="end" font-size="12" fill="#445">${esc(r.k.slice(0,10))}</text>`
+       + `<rect x="${lw}" y="${y+3}" width="${Math.max(bw,1)}" height="18" rx="3" fill="${color}"/>`
+       + `<text x="${lw+bw+5}" y="${y+16}" font-size="12" fill="#445">${fmt(r.v)}</text>`;
+  });
+  el.innerHTML = s + '</svg>';
+}
+
+function line(el, vals) {
+  if (!vals.length) { el.innerHTML = '<div class="empty">尚無資料</div>'; return; }
+  const w = 420, h = 170, p = 28, max = Math.max(...vals, 1);
+  const pt = (v, i) => [p + (vals.length > 1 ? i*(w-2*p)/(vals.length-1) : (w-2*p)/2), h-p - v/max*(h-2*p)];
+  const d = vals.map((v,i) => pt(v,i).join(',')).join(' ');
+  let s = `<svg viewBox="0 0 ${w} ${h}" role="img"><line x1="${p}" y1="${h-p}" x2="${w-p}" y2="${h-p}" stroke="#ccd"/>`
+        + `<text x="${p-4}" y="${p+4}" text-anchor="end" font-size="11" fill="#778">${max}</text>`
+        + `<text x="${p-4}" y="${h-p+4}" text-anchor="end" font-size="11" fill="#778">0</text>`
+        + `<polyline points="${d}" fill="none" stroke="#2a5db0" stroke-width="2"/>`;
+  vals.forEach((v,i) => { const [x,y] = pt(v,i); s += `<circle cx="${x}" cy="${y}" r="3" fill="#2a5db0"/>`; });
+  el.innerHTML = s + `<text x="${w/2}" y="${h-6}" text-anchor="middle" font-size="11" fill="#778">第 N 局（依時間）</text></svg>`;
+}
+
+function render() {
+  const logs = load().sort((a,b) => a.time.localeCompare(b.time));
+  const users = {};
+  logs.forEach(l => { if (!users[l.user]) users[l.user] = []; users[l.user].push(l); });
+  const stat = Object.entries(users).map(([u, a]) => ({
+    user:u, games:a.length, best:Math.max(...a.map(x=>x.score)), avgScore:avg(a.map(x=>x.score)),
+    avgShots:avg(a.map(x=>x.shots)), avgHit:avg(a.map(x=>x.hitsTaken)),
+    acc:a.reduce((s,x)=>s+x.hitsLanded,0) / Math.max(1, a.reduce((s,x)=>s+x.shots,0))
+  })).sort((x,y) => y.best - x.best);
+
+  $('cards').innerHTML = [
+    ['總局數', logs.length], ['玩家數', stat.length],
+    ['平均分數', Math.round(avg(logs.map(l=>l.score)))],
+    ['平均彈藥消耗', Math.round(avg(logs.map(l=>l.shots)))],
+    ['平均被攻擊次數', avg(logs.map(l=>l.hitsTaken)).toFixed(1)]
+  ].map(([k,v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+
+  bars($('c1'), stat.map(s => ({k:s.user, v:s.best})), '#2a5db0');
+  bars($('c2'), stat.map(s => ({k:s.user, v:s.avgShots})), '#e0a800');
+  bars($('c3'), stat.map(s => ({k:s.user, v:s.avgHit})), '#d6402a', v => v.toFixed(1));
+  line($('c4'), logs.map(l => l.score));
+
+  $('rank').innerHTML = stat.length
+    ? `<table><tr><th>名次</th><th>玩家</th><th>最高分</th><th>平均分</th><th>局數</th><th>平均彈藥</th><th>平均被攻擊</th><th>命中效率</th></tr>`
+      + stat.map((s,i) => `<tr><td>${i+1}</td><td>${esc(s.user)}</td><td>${s.best}</td><td>${Math.round(s.avgScore)}</td><td>${s.games}</td><td>${Math.round(s.avgShots)}</td><td>${s.avgHit.toFixed(1)}</td><td>${(s.acc*100).toFixed(0)}%</td></tr>`).join('')
+      + '</table>'
+    : '<div class="empty">尚無資料，請先到遊戲頁玩一局。</div>';
+}
+
+$('refresh').onclick = render;
+$('export').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(load(), null, 2)], {type:'application/json'}));
+  a.download = 'meteor_logs.json'; a.click();
+};
+$('import').onchange = async e => {
+  try {
+    const data = JSON.parse(await e.target.files[0].text());
+    if (!Array.isArray(data)) throw 0;
+    localStorage.setItem('meteor_logs', JSON.stringify(load().concat(data))); render();
+  } catch(err) { alert('匯入失敗：不是有效的 log JSON'); }
+};
+$('clear').onclick = () => { if (confirm('確定清除全部紀錄？')) { localStorage.removeItem('meteor_logs'); render(); } };
+try { render(); } catch (err) {
+  document.getElementById('cards').innerHTML = '<div class="card">儀表板發生錯誤：' + esc(err.message) + '</div>';
+}
+</script>
+</body>
+</html>
